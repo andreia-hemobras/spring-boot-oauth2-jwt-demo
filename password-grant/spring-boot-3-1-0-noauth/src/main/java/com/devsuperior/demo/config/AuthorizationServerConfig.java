@@ -67,42 +67,59 @@ public class AuthorizationServerConfig {
 	@Autowired
 	private UserDetailsService userDetailsService;
 
+	/*
+	* Configura as regras de segurança do servidor OAuth2.
+	* Define como o servidor vai processar requisições no endpoint /oauth2/token. Usa CustomPasswordAuthenticationConverter para transformar a requisição em um token de autenticação, e CustomPasswordAuthenticationProvider para validar as credenciais do usuário contra o banco de dados.
+	* */
 	@Bean
 	@Order(2)
 	public SecurityFilterChain asSecurityFilterChain(HttpSecurity http) throws Exception {
 
 		OAuth2AuthorizationServerConfiguration.applyDefaultSecurity(http);
 
-		// @formatter:off
 		http.getConfigurer(OAuth2AuthorizationServerConfigurer.class)
 			.tokenEndpoint(tokenEndpoint -> tokenEndpoint
 				.accessTokenRequestConverter(new CustomPasswordAuthenticationConverter())
 				.authenticationProvider(new CustomPasswordAuthenticationProvider(authorizationService(), tokenGenerator(), userDetailsService, passwordEncoder())));
 
 		http.oauth2ResourceServer(oauth2ResourceServer -> oauth2ResourceServer.jwt(Customizer.withDefaults()));
-		// @formatter:on
 
 		return http.build();
 	}
 
+	/*
+	* Armazena na memória os tokens emitidos.
+	* Cada vez que um usuário faz login, um registro é criado aqui com informações do token. Em produção, você trocaria isso por um banco de dados.
+	* */
 	@Bean
 	public OAuth2AuthorizationService authorizationService() {
 		return new InMemoryOAuth2AuthorizationService();
 	}
 
+	/*
+	* Armazena consentimento do usuário.
+	* Registra quando um usuário concorda em compartilhar seus dados com um cliente. É menos relevante no fluxo "password grant", mas está aqui por completude.
+	* */
 	@Bean
 	public OAuth2AuthorizationConsentService oAuth2AuthorizationConsentService() {
 		return new InMemoryOAuth2AuthorizationConsentService();
 	}
 
+	/*
+	* Define como as senhas serão criptografadas.
+	* Usa BCrypt, que é seguro e irreversível. Sempre que uma senha precisa ser validada, o sistema compara o hash em vez da senha em texto plano.
+	* */
 	@Bean
 	public PasswordEncoder passwordEncoder() {
 		return new BCryptPasswordEncoder();
 	}
 
+	/*
+	* Registra um cliente OAuth2 autorizado.
+	* Define qual aplicação pode fazer login (client ID), sua senha secreta (client secret), e quais permissões ela tem (scopes: "read" e "write"). Sem esse registro, o cliente não consegue autenticar.
+	* */
 	@Bean
 	public RegisteredClientRepository registeredClientRepository() {
-		// @formatter:off
 		RegisteredClient registeredClient = RegisteredClient
 			.withId(UUID.randomUUID().toString())
 			.clientId(clientId)
@@ -113,31 +130,46 @@ public class AuthorizationServerConfig {
 			.tokenSettings(tokenSettings())
 			.clientSettings(clientSettings())
 			.build();
-		// @formatter:on
 
 		return new InMemoryRegisteredClientRepository(registeredClient);
 	}
 
+	/*
+	* Define as configurações dos tokens.
+	* Especifica que os tokens serão JWT auto-contidos (não precisa consultar banco para validar) e quanto tempo duram (exemplo: 1 hora).
+	* */
 	@Bean
 	public TokenSettings tokenSettings() {
-		// @formatter:off
+
 		return TokenSettings.builder()
 			.accessTokenFormat(OAuth2TokenFormat.SELF_CONTAINED)
 			.accessTokenTimeToLive(Duration.ofSeconds(jwtDurationSeconds))
 			.build();
-		// @formatter:on
 	}
 
+	/*
+	* Configurações gerais do cliente.
+	* Sem customizações aqui, usa configurações padrão do Spring Security
+	* */
 	@Bean
 	public ClientSettings clientSettings() {
 		return ClientSettings.builder().build();
 	}
 
+	/*
+	* Configurações do servidor de autorização.
+	* Define configurações globais como a URL do emissor (issuer) e endpoints. Também usa padrão do Spring.
+	* */
 	@Bean
 	public AuthorizationServerSettings authorizationServerSettings() {
 		return AuthorizationServerSettings.builder().build();
 	}
 
+
+	/*
+	* Cria o gerador de tokens JWT.
+	* Combina o gerador de JWT (que assina com a chave RSA privada) com o gerador de token de acesso. É aqui que os tokens são realmente criados.
+	* */
 	@Bean
 	public OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator() {
 		NimbusJwtEncoder jwtEncoder = new NimbusJwtEncoder(jwkSource());
@@ -147,6 +179,10 @@ public class AuthorizationServerConfig {
 		return new DelegatingOAuth2TokenGenerator(jwtGenerator, accessTokenGenerator);
 	}
 
+	/*
+	 * Adiciona informações extras ao JWT.
+	 * Pega os dados do usuário (nome, authorities/roles) e coloca dentro do token antes de assinar. Assim, qualquer serviço que receber o token já sabe quem é o usuário sem consultar o banco.
+	 * */
 	@Bean
 	public OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer() {
 		return context -> {
@@ -154,20 +190,26 @@ public class AuthorizationServerConfig {
 			CustomUserAuthorities user = (CustomUserAuthorities) principal.getDetails();
 			List<String> authorities = user.getAuthorities().stream().map(x -> x.getAuthority()).toList();
 			if (context.getTokenType().getValue().equals("access_token")) {
-				// @formatter:off
 				context.getClaims()
 					.claim("authorities", authorities)
 					.claim("username", user.getUsername());
-				// @formatter:on
 			}
 		};
 	}
 
+	/*
+	 * Cria o validador de JWTs.
+	 * Quando uma requisição chega com um token, este decoder verifica se o token é válido, não expirou e foi realmente assinado por este servidor.
+	 * */
 	@Bean
 	public JwtDecoder jwtDecoder(JWKSource<SecurityContext> jwkSource) {
 		return OAuth2AuthorizationServerConfiguration.jwtDecoder(jwkSource);
 	}
 
+	/*
+	 * Fornece as chaves públicas/privadas.
+	 * Armazena a chave privada (usada para assinar tokens) e a chave pública (usada para validar tokens). Essas chaves são geradas através de generateRsa().
+	 * */
 	@Bean
 	public JWKSource<SecurityContext> jwkSource() {
 		RSAKey rsaKey = generateRsa();
@@ -175,6 +217,10 @@ public class AuthorizationServerConfig {
 		return (jwkSelector, securityContext) -> jwkSelector.select(jwkSet);
 	}
 
+	/*
+	 * Gera as chaves RSA.
+	 * Cria um par de chaves (pública e privada) de 2048 bits. A chave privada fica no servidor, a pública pode ser compartilhada.
+	 * */
 	private static RSAKey generateRsa() {
 		KeyPair keyPair = generateRsaKey();
 		RSAPublicKey publicKey = (RSAPublicKey) keyPair.getPublic();
@@ -182,6 +228,10 @@ public class AuthorizationServerConfig {
 		return new RSAKey.Builder(publicKey).privateKey(privateKey).keyID(UUID.randomUUID().toString()).build();
 	}
 
+	/*
+	 * Cria o algoritmo de geração de chaves.
+	 * Usa o KeyPairGenerator do Java para gerar as chaves RSA com segurança. Se algum erro ocorrer, lança uma exceção.
+	 * */
 	private static KeyPair generateRsaKey() {
 		KeyPair keyPair;
 		try {
