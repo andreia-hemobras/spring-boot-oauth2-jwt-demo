@@ -1,4 +1,4 @@
-package com.devsuperior.demo.config.customGrant;
+package com.devsuperior.demo.config.customgrant;
 
 import java.util.Arrays;
 import java.util.HashMap;
